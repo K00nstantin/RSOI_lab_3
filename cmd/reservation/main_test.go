@@ -1,7 +1,7 @@
 package main
 
 import (
-	"RSOI_lab_2/pkg/models"
+	"RSOI_lab_3/pkg/models"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -34,8 +34,8 @@ func TestGetReservations(t *testing.T) {
 		Username:       "testuser",
 		BookUid:        "test-book-uid",
 		LibraryUid:     "test-lib-uid",
-		Status:          "RENTED",
-		BookCondition:   "EXCELLENT",
+		Status:         "RENTED",
+		BookCondition:  "EXCELLENT",
 		StartDate:      time.Now(),
 		TillDate:       time.Now().AddDate(0, 0, 7),
 	}
@@ -79,8 +79,8 @@ func TestGetActiveReservationsCount(t *testing.T) {
 		Username:       "testuser",
 		BookUid:        "test-book-uid-1",
 		LibraryUid:     "test-lib-uid",
-		Status:          "RENTED",
-		BookCondition:   "EXCELLENT",
+		Status:         "RENTED",
+		BookCondition:  "EXCELLENT",
 		StartDate:      time.Now(),
 		TillDate:       time.Now().AddDate(0, 0, 7),
 	}
@@ -91,8 +91,8 @@ func TestGetActiveReservationsCount(t *testing.T) {
 		Username:       "testuser",
 		BookUid:        "test-book-uid-2",
 		LibraryUid:     "test-lib-uid",
-		Status:          "RETURNED",
-		BookCondition:   "EXCELLENT",
+		Status:         "RETURNED",
+		BookCondition:  "EXCELLENT",
 		StartDate:      time.Now().AddDate(0, 0, -10),
 		TillDate:       time.Now().AddDate(0, 0, -3),
 	}
@@ -175,8 +175,8 @@ func TestReturnBook(t *testing.T) {
 		Username:       "testuser",
 		BookUid:        "test-book-uid",
 		LibraryUid:     "test-lib-uid",
-		Status:          "RENTED",
-		BookCondition:   "EXCELLENT",
+		Status:         "RENTED",
+		BookCondition:  "EXCELLENT",
 		StartDate:      time.Now(),
 		TillDate:       time.Now().AddDate(0, 0, 7),
 	}
@@ -218,8 +218,8 @@ func TestReturnBookExpired(t *testing.T) {
 		Username:       "testuser",
 		BookUid:        "test-book-uid",
 		LibraryUid:     "test-lib-uid",
-		Status:          "RENTED",
-		BookCondition:   "EXCELLENT",
+		Status:         "RENTED",
+		BookCondition:  "EXCELLENT",
 		StartDate:      time.Now().AddDate(0, 0, -10),
 		TillDate:       time.Now().AddDate(0, 0, -3),
 	}
@@ -247,4 +247,3 @@ func TestReturnBookExpired(t *testing.T) {
 	testDB.Where("reservation_uid = ?", "test-res-uid").First(&reservation)
 	assert.Equal(t, "EXPIRED", reservation.Status)
 }
-

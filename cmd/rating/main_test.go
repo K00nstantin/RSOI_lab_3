@@ -1,7 +1,7 @@
 package main
 
 import (
-	"RSOI_lab_2/pkg/models"
+	"RSOI_lab_3/pkg/models"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -116,4 +116,3 @@ func TestUpdateRating(t *testing.T) {
 	testDB.Where("username = ?", "testuser").First(&updatedRating)
 	assert.Equal(t, 80, updatedRating.Stars)
 }
-
