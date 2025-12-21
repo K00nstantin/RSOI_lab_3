@@ -14,7 +14,73 @@ services:
     ports:
       - "5432:5432"
 
-# TODO добавить сервисы
+  gateway:
+    build:
+      context: .
+      dockerfile: cmd/gateway/Dockerfile
+    container_name: gateway
+    restart: on-failure
+    ports:
+      - "8080:8080"
+    environment:
+      RATING_SERVICE_URL: http://rating:8050
+      LIBRARY_SERVICE_URL: http://library:8060
+      RESERVATION_SERVICE_URL: http://reservation:8070
+    depends_on:
+      - library
+      - rating
+      - reservation
+
+  library:
+    build:
+      context: .
+      dockerfile: cmd/library/Dockerfile
+    container_name: library
+    restart: on-failure
+    ports:
+      - "8060:8060"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: program
+      DB_PASSWORD: test
+      DB_NAME: libraries
+    depends_on:
+      - postgres
+
+  rating:
+    build:
+      context: .
+      dockerfile: cmd/rating/Dockerfile
+    container_name: rating
+    restart: on-failure
+    ports:
+      - "8050:8050"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: program
+      DB_PASSWORD: test
+      DB_NAME: ratings
+    depends_on:
+      - postgres
+
+  reservation:
+    build:
+      context: .
+      dockerfile: cmd/reservation/Dockerfile
+    container_name: reservation
+    restart: on-failure
+    ports:
+      - "8070:8070"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: program
+      DB_PASSWORD: test
+      DB_NAME: reservations
+    depends_on:
+      - postgres
 
 volumes:
   db-data:

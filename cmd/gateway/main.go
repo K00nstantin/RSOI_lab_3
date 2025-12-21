@@ -1,6 +1,8 @@
 package main
 
 import (
+	"RSOI_lab_3/pkg/circuitbreaker"
+	"RSOI_lab_3/pkg/queue"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -11,13 +13,21 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 var (
-	ratingServiceURL      string
-	libraryServiceURL     string
-	reservationServiceURL string
-	httpClient            *http.Client
+	ratingServiceURL, libraryServiceURL, reservationServiceURL string
+	httpClient                                                 *http.Client
+	libraryCB, ratingCB, reservationCB                         *circuitbreaker.CircuitBreaker
+	retryQueue                                                 *queue.Queue
+)
+
+const (
+	maxFailures = 3
+	timeout     = 30 * time.Second
+	retryDelay  = 10 * time.Second
+	maxRetries  = 5
 )
 
 func main() {
@@ -25,12 +35,15 @@ func main() {
 	libraryServiceURL = getEnv("LIBRARY_SERVICE_URL", "http://localhost:8060")
 	reservationServiceURL = getEnv("RESERVATION_SERVICE_URL", "http://localhost:8070")
 
-	httpClient = &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	httpClient = &http.Client{Timeout: 10 * time.Second}
+	libraryCB = circuitbreaker.NewCircuitBreaker(maxFailures, timeout)
+	ratingCB = circuitbreaker.NewCircuitBreaker(maxFailures, timeout)
+	reservationCB = circuitbreaker.NewCircuitBreaker(maxFailures, timeout)
+	retryQueue = queue.NewQueue()
+
+	go processRetryQueue()
 
 	r := gin.Default()
-
 	r.GET("/api/v1/libraries", getLibrariesHandler)
 	r.GET("/api/v1/libraries/:libraryUid/books", getLibraryBooksHandler)
 	r.GET("/api/v1/reservations", getReservationsHandler)
@@ -43,29 +56,90 @@ func main() {
 	r.Run(":8080")
 }
 
+func processRetryQueue() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		for req := retryQueue.Dequeue(); req != nil; req = retryQueue.Dequeue() {
+			log.Printf("Retrying request %s (attempt %d/%d)", req.ID, req.RetryCount+1, req.MaxRetries)
+			if !executeRetryRequest(req) {
+				req.RetryCount++
+				if req.RetryCount < req.MaxRetries {
+					req.RetryAt = time.Now().Add(retryDelay)
+					retryQueue.Enqueue(req)
+				}
+			}
+		}
+	}
+}
+
+func executeRetryRequest(req *queue.RetryRequest) bool {
+	httpReq, err := http.NewRequest(req.Method, req.URL, bytes.NewBuffer(req.Body))
+	if err != nil {
+		return false
+	}
+	for k, v := range req.Headers {
+		httpReq.Header.Set(k, v)
+	}
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+func executeWithCB(cb *circuitbreaker.CircuitBreaker, c *gin.Context, method, url string, body []byte, headers map[string]string, fallback func()) (*http.Response, error) {
+	var resp *http.Response
+	var fallbackCalled bool
+
+	err := cb.Execute(
+		func() error {
+			req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
+			if err != nil {
+				return err
+			}
+			for k, v := range headers {
+				req.Header.Set(k, v)
+			}
+			resp, err = httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				return fmt.Errorf("status %d", resp.StatusCode)
+			}
+			return nil
+		},
+		func() error {
+			fallbackCalled = true
+			fallback()
+			return nil
+		},
+	)
+
+	if fallbackCalled {
+		return nil, nil
+	}
+	return resp, err
+}
+
 func getLibrariesHandler(c *gin.Context) {
 	params := c.Request.URL.Query().Encode()
 	url := libraryServiceURL + "/api/v1/libraries"
 	if params != "" {
 		url += "?" + params
 	}
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to make a request"})
+	resp, _ := executeWithCB(libraryCB, c, "GET", url, nil, nil, func() {
+		c.JSON(200, gin.H{"page": 1, "pageSize": 10, "totalElements": 0, "items": []interface{}{}})
+	})
+	if resp == nil {
 		return
 	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to perform request"})
-		return
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to perform request"})
-		return
-	}
-	c.Data(response.StatusCode, "application/json", body)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	c.Data(resp.StatusCode, "application/json", body)
 }
 
 func getLibraryBooksHandler(c *gin.Context) {
@@ -75,23 +149,15 @@ func getLibraryBooksHandler(c *gin.Context) {
 	if queryparams != "" {
 		url += "?" + queryparams
 	}
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create a request"})
+	resp, _ := executeWithCB(libraryCB, c, "GET", url, nil, nil, func() {
+		c.JSON(200, gin.H{"page": 1, "pageSize": 10, "totalElements": 0, "items": []interface{}{}})
+	})
+	if resp == nil {
 		return
 	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to perform a request"})
-		return
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(response.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read the response"})
-		return
-	}
-	c.Data(response.StatusCode, "application/json", data)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	c.Data(resp.StatusCode, "application/json", body)
 }
 
 func getReservationsHandler(c *gin.Context) {
@@ -101,34 +167,24 @@ func getReservationsHandler(c *gin.Context) {
 		return
 	}
 	url := reservationServiceURL + "/api/v1/reservations"
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create request"})
+	resp, _ := executeWithCB(reservationCB, c, "GET", url, nil,
+		map[string]string{"X-User-Name": username}, func() {
+			c.JSON(200, []interface{}{})
+		})
+
+	if resp == nil {
 		return
 	}
-	request.Header.Set("X-User-Name", username)
-	response, err := httpClient.Do(request)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to perform the request"})
-		return
-	}
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		c.Data(response.StatusCode, "application/json", body)
-		return
-	}
+	defer resp.Body.Close()
+
 	var reservations []map[string]interface{}
-	err = json.NewDecoder(response.Body).Decode(&reservations)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decode the response"})
-		return
-	}
+	json.NewDecoder(resp.Body).Decode(&reservations)
 	enrichedReservations := make([]map[string]interface{}, len(reservations))
 	for i, res := range reservations {
 		bookUid, _ := res["bookUid"].(string)
 		libraryUid, _ := res["libraryUid"].(string)
-		bookInfo := getBookInfo(libraryUid, bookUid)
-		libraryInfo := getLibraryInfo(libraryUid)
+		bookInfo := getBookInfoWithFallback(libraryUid, bookUid)
+		libraryInfo := getLibraryInfoWithFallback(libraryUid)
 		enrichedReservations[i] = map[string]interface{}{
 			"reservationUid": res["reservationUid"],
 			"status":         res["status"],
@@ -163,7 +219,7 @@ func createReservationHandler(c *gin.Context) {
 		})
 		return
 	}
-	bookinfo := getBookInfo(request.LibraryUid, request.BookUid)
+	bookinfo := getBookInfoWithFallback(request.LibraryUid, request.BookUid)
 	if bookinfo == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to find the book in the library"})
 		return
@@ -174,9 +230,8 @@ func createReservationHandler(c *gin.Context) {
 		return
 	}
 
-	// Проверка количества книг на руках и лимита по рейтингу
-	activeReservationsCount := getActiveReservationsCount(username)
-	rating := getUserRating(username)
+	activeReservationsCount := getActiveReservationsCountWithFallback(username)
+	rating := getUserRatingWithFallback(username)
 	stars, ok := rating["stars"].(float64)
 	if !ok {
 		stars = 0
@@ -189,13 +244,11 @@ func createReservationHandler(c *gin.Context) {
 		return
 	}
 
-	// Получаем состояние книги на момент выдачи
 	bookCondition, ok := bookinfo["condition"].(string)
 	if !ok {
-		bookCondition = "EXCELLENT" // Значение по умолчанию
+		bookCondition = "EXCELLENT"
 	}
 
-	// Добавляем состояние книги в запрос
 	requestWithCondition := map[string]interface{}{
 		"bookUid":       request.BookUid,
 		"libraryUid":    request.LibraryUid,
@@ -218,7 +271,8 @@ func createReservationHandler(c *gin.Context) {
 	req.Header.Set("X-User-Name", username)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to perform the request"})
+		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
+		c.JSON(200, gin.H{"message": "Reservation request queued for processing"})
 		return
 	}
 	defer resp.Body.Close()
@@ -236,12 +290,16 @@ func createReservationHandler(c *gin.Context) {
 
 	err = decreaseBookCount(request.LibraryUid, request.BookUid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update book availability"})
+		if reservationUid, ok := reservation["reservationUid"].(string); ok {
+			queueRequestForRetry("DELETE", fmt.Sprintf("%s/api/v1/reservations/%s/rollback", reservationServiceURL, reservationUid), map[string]string{"X-User-Name": username}, nil)
+		}
+		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
+		c.JSON(200, gin.H{"message": "Reservation request queued for processing"})
 		return
 	}
 
-	libraryinfo := getLibraryInfo(request.LibraryUid)
-	rating = getUserRating(username)
+	libraryinfo := getLibraryInfoWithFallback(request.LibraryUid)
+	rating = getUserRatingWithFallback(username)
 	response := map[string]interface{}{
 		"reservationUid": reservation["reservationUid"],
 		"status":         reservation["status"],
@@ -287,7 +345,7 @@ func returnBookHandler(c *gin.Context) {
 		return
 	}
 
-	reservation, err := getReservationInfo(reservationUid, username)
+	reservation, err := getReservationInfoWithFallback(reservationUid, username)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Reservation not found"})
 		return
@@ -330,7 +388,8 @@ func returnBookHandler(c *gin.Context) {
 	req.Header.Set("X-User-Name", username)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to execute the request"})
+		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, reqbody)
+		c.Status(204)
 		return
 	}
 	defer resp.Body.Close()
@@ -344,7 +403,9 @@ func returnBookHandler(c *gin.Context) {
 	bookUid := reservation["bookUid"].(string)
 	err = increaseBookCount(libraryUid, bookUid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update book availability"})
+		queueRequestForRetry("POST", fmt.Sprintf("%s/api/v1/reservations/%s/rollback-return", reservationServiceURL, reservationUid), map[string]string{"Content-Type": "application/json", "X-User-Name": username}, nil)
+		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, reqbody)
+		c.Status(204)
 		return
 	}
 
@@ -387,23 +448,16 @@ func getRatingHandler(c *gin.Context) {
 	}
 
 	url := ratingServiceURL + "/api/v1/rating"
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create the request"})
-		return
-	}
-	req.Header.Set("X-User-Name", username)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to execute the request"})
+	resp, _ := executeWithCB(ratingCB, c, "GET", url, nil,
+		map[string]string{"X-User-Name": username}, func() {
+			c.JSON(200, gin.H{"stars": 0})
+		})
+
+	if resp == nil {
 		return
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read response body"})
-		return
-	}
+	body, _ := io.ReadAll(resp.Body)
 	c.Data(resp.StatusCode, "application/json", body)
 }
 
@@ -422,107 +476,134 @@ func getEnv(key, defaultValue string) string {
 	return value
 }
 
-func getBookInfo(libraryUid, bookUid string) map[string]interface{} {
-	url := fmt.Sprintf("%s/api/v1/libraries/%s/books/%s", libraryServiceURL, libraryUid, bookUid)
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil
-	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return nil
-	}
-
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil
-	}
-	var book map[string]interface{}
-	err = json.NewDecoder(response.Body).Decode(&book)
-	if err != nil {
-		return nil
-	}
-	return book
-
-}
-
-func getLibraryInfo(libraryUid string) map[string]interface{} {
-	url := fmt.Sprintf("%s/api/v1/libraries/%s", libraryServiceURL, libraryUid)
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil
-	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return nil
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil
-	}
-	var library map[string]interface{}
-	err = json.NewDecoder(response.Body).Decode(&library)
-	if err != nil {
-		return nil
-	}
-	return library
-}
-
-func getUserRating(username string) map[string]interface{} {
-	url := ratingServiceURL + "/api/v1/rating"
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return map[string]interface{}{"stars": 0}
-	}
-	req.Header.Set("X-User-Name", username)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return map[string]interface{}{"stars": 0}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return map[string]interface{}{"stars": 0}
-	}
-
-	var rating map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&rating); err != nil {
-		return map[string]interface{}{"stars": 0}
-	}
-
-	return rating
-}
-
-func getActiveReservationsCount(username string) int {
-	url := reservationServiceURL + "/api/v1/reservations/active/count"
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0
-	}
-	req.Header.Set("X-User-Name", username)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0
-	}
-
+func getBookInfoWithFallback(libraryUid, bookUid string) map[string]interface{} {
 	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0
-	}
+	libraryCB.Execute(
+		func() error {
+			req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/libraries/%s/books/%s", libraryServiceURL, libraryUid, bookUid), nil)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				return fmt.Errorf("status %d", resp.StatusCode)
+			}
+			return json.NewDecoder(resp.Body).Decode(&result)
+		},
+		func() error {
+			result = map[string]interface{}{"bookUid": bookUid, "name": "", "author": "", "genre": "", "condition": "EXCELLENT", "availableCount": float64(0)}
+			return nil
+		},
+	)
+	return result
+}
 
-	count, ok := result["count"].(float64)
-	if !ok {
-		return 0
-	}
+func getLibraryInfoWithFallback(libraryUid string) map[string]interface{} {
+	var result map[string]interface{}
+	libraryCB.Execute(
+		func() error {
+			req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/libraries/%s", libraryServiceURL, libraryUid), nil)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				return fmt.Errorf("status %d", resp.StatusCode)
+			}
+			return json.NewDecoder(resp.Body).Decode(&result)
+		},
+		func() error {
+			result = map[string]interface{}{"libraryUid": libraryUid, "name": "", "address": "", "city": ""}
+			return nil
+		},
+	)
+	return result
+}
 
-	return int(count)
+func getUserRatingWithFallback(username string) map[string]interface{} {
+	var result map[string]interface{}
+	ratingCB.Execute(
+		func() error {
+			req, _ := http.NewRequest("GET", ratingServiceURL+"/api/v1/rating", nil)
+			req.Header.Set("X-User-Name", username)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				return fmt.Errorf("status %d", resp.StatusCode)
+			}
+			return json.NewDecoder(resp.Body).Decode(&result)
+		},
+		func() error {
+			result = map[string]interface{}{"stars": 0}
+			return nil
+		},
+	)
+	return result
+}
+
+func getActiveReservationsCountWithFallback(username string) int {
+	var count int
+	reservationCB.Execute(
+		func() error {
+			req, _ := http.NewRequest("GET", reservationServiceURL+"/api/v1/reservations/active/count", nil)
+			req.Header.Set("X-User-Name", username)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				return fmt.Errorf("status %d", resp.StatusCode)
+			}
+			var result map[string]interface{}
+			json.NewDecoder(resp.Body).Decode(&result)
+			count = int(result["count"].(float64))
+			return nil
+		},
+		func() error {
+			count = 0
+			return nil
+		},
+	)
+	return count
+}
+
+func getReservationInfoWithFallback(reservationUid, username string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	var err error
+	reservationCB.Execute(
+		func() error {
+			req, _ := http.NewRequest("GET", reservationServiceURL+"/api/v1/reservations", nil)
+			req.Header.Set("X-User-Name", username)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				return fmt.Errorf("status %d", resp.StatusCode)
+			}
+			var reservations []map[string]interface{}
+			json.NewDecoder(resp.Body).Decode(&reservations)
+			for _, r := range reservations {
+				if r["reservationUid"] == reservationUid {
+					result = r
+					return nil
+				}
+			}
+			return fmt.Errorf("not found")
+		},
+		func() error {
+			err = fmt.Errorf("service unavailable")
+			return nil
+		},
+	)
+	return result, err
 }
 
 func decreaseBookCount(libraryUid, bookUid string) error {
@@ -563,38 +644,6 @@ func increaseBookCount(libraryUid, bookUid string) error {
 	}
 
 	return nil
-}
-
-func getReservationInfo(reservationUid, username string) (map[string]interface{}, error) {
-	url := fmt.Sprintf("%s/api/v1/reservations", reservationServiceURL)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-User-Name", username)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get reservations: status %d", resp.StatusCode)
-	}
-
-	var reservations []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&reservations); err != nil {
-		return nil, err
-	}
-
-	for _, res := range reservations {
-		if res["reservationUid"] == reservationUid {
-			return res, nil
-		}
-	}
-
-	return nil, fmt.Errorf("reservation not found")
 }
 
 func adjustUserRating(username string, delta int) error {
@@ -640,4 +689,17 @@ func isConditionWorse(originalCondition, returnedCondition string) bool {
 		return false
 	}
 	return returnedOrder < originalOrder
+}
+
+func queueRequestForRetry(method, url string, headers map[string]string, body []byte) {
+	retryQueue.Enqueue(&queue.RetryRequest{
+		ID:         uuid.New().String(),
+		Method:     method,
+		URL:        url,
+		Headers:    headers,
+		Body:       body,
+		RetryAt:    time.Now().Add(retryDelay),
+		RetryCount: 0,
+		MaxRetries: maxRetries,
+	})
 }
