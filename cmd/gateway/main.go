@@ -122,6 +122,10 @@ func executeWithCB(cb *circuitbreaker.CircuitBreaker, c *gin.Context, method, ur
 	if fallbackCalled {
 		return nil, nil
 	}
+	if err != nil {
+		fallback()
+		return nil, nil
+	}
 	return resp, err
 }
 
