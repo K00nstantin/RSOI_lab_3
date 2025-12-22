@@ -221,7 +221,16 @@ func createReservationHandler(c *gin.Context) {
 	}
 	bookinfo := getBookInfoWithFallback(request.LibraryUid, request.BookUid)
 	if bookinfo == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to find the book in the library"})
+		requestWithCondition := map[string]interface{}{
+			"bookUid":       request.BookUid,
+			"libraryUid":    request.LibraryUid,
+			"tillDate":      request.TillDate,
+			"bookCondition": "EXCELLENT",
+		}
+		body, _ := json.Marshal(requestWithCondition)
+		url := reservationServiceURL + "/api/v1/reservations"
+		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
+		c.JSON(200, gin.H{"message": "Reservation request queued for processing"})
 		return
 	}
 	availableCount, ok := bookinfo["availableCount"].(float64)
@@ -347,6 +356,18 @@ func returnBookHandler(c *gin.Context) {
 
 	reservation, err := getReservationInfoWithFallback(reservationUid, username)
 	if err != nil {
+		if err.Error() == "service unavailable" {
+			status := "RETURNED"
+			reqbody, _ := json.Marshal(map[string]interface{}{
+				"condition": request.Condition,
+				"date":      request.Date,
+				"status":    status,
+			})
+			url := fmt.Sprintf("%s/api/v1/reservations/%s/return", reservationServiceURL, reservationUid)
+			queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, reqbody)
+			c.Status(204)
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "Reservation not found"})
 		return
 	}
@@ -478,6 +499,7 @@ func getEnv(key, defaultValue string) string {
 
 func getBookInfoWithFallback(libraryUid, bookUid string) map[string]interface{} {
 	var result map[string]interface{}
+	var fallbackCalled bool
 	libraryCB.Execute(
 		func() error {
 			req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/libraries/%s/books/%s", libraryServiceURL, libraryUid, bookUid), nil)
@@ -492,10 +514,13 @@ func getBookInfoWithFallback(libraryUid, bookUid string) map[string]interface{} 
 			return json.NewDecoder(resp.Body).Decode(&result)
 		},
 		func() error {
-			result = map[string]interface{}{"bookUid": bookUid, "name": "", "author": "", "genre": "", "condition": "EXCELLENT", "availableCount": float64(0)}
+			fallbackCalled = true
 			return nil
 		},
 	)
+	if fallbackCalled {
+		return nil
+	}
 	return result
 }
 
@@ -576,6 +601,7 @@ func getActiveReservationsCountWithFallback(username string) int {
 func getReservationInfoWithFallback(reservationUid, username string) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	var err error
+	var fallbackCalled bool
 	reservationCB.Execute(
 		func() error {
 			req, _ := http.NewRequest("GET", reservationServiceURL+"/api/v1/reservations", nil)
@@ -599,10 +625,13 @@ func getReservationInfoWithFallback(reservationUid, username string) (map[string
 			return fmt.Errorf("not found")
 		},
 		func() error {
-			err = fmt.Errorf("service unavailable")
+			fallbackCalled = true
 			return nil
 		},
 	)
+	if fallbackCalled {
+		return nil, fmt.Errorf("service unavailable")
+	}
 	return result, err
 }
 
