@@ -5,7 +5,20 @@ path=$(dirname "$0")
 
 PIDs=()
 for port in "${PORTS[@]}"; do
-  "$path"/wait-for.sh -t 120 "http://localhost:$port/manage/health" -- echo "Host localhost:$port is active" &
+  (
+    timeout=180
+    elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+      if curl -f -s "http://localhost:$port/manage/health" > /dev/null 2>&1; then
+        echo "Host localhost:$port is active"
+        exit 0
+      fi
+      sleep 2
+      elapsed=$((elapsed + 2))
+    done
+    echo "Operation timed out for port $port" >&2
+    exit 1
+  ) &
   PIDs+=($!)
 done
 
