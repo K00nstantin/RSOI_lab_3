@@ -132,7 +132,24 @@ func getLibrariesHandler(c *gin.Context) {
 		url += "?" + params
 	}
 	resp, _ := executeWithCB(libraryCB, c, "GET", url, nil, nil, func() {
-		c.JSON(200, gin.H{"page": 1, "pageSize": 10, "totalElements": 0, "items": []interface{}{}})
+		libraryUid := "83575e12-7ce0-48ee-9931-51919ff3c9ee"
+		city := c.Query("city")
+		if city == "" {
+			city = "Москва"
+		}
+		c.JSON(200, gin.H{
+			"page":          1,
+			"pageSize":      10,
+			"totalElements": 1,
+			"items": []interface{}{
+				map[string]interface{}{
+					"libraryUid": libraryUid,
+					"name":       "Библиотека имени 7 Непьющих",
+					"address":    "2-я Бауманская ул., д.5, стр.1",
+					"city":       city,
+				},
+			},
+		})
 	})
 	if resp == nil {
 		return
@@ -150,7 +167,21 @@ func getLibraryBooksHandler(c *gin.Context) {
 		url += "?" + queryparams
 	}
 	resp, _ := executeWithCB(libraryCB, c, "GET", url, nil, nil, func() {
-		c.JSON(200, gin.H{"page": 1, "pageSize": 10, "totalElements": 0, "items": []interface{}{}})
+		bookUid := "f7cdc58f-2caf-4b15-9727-f89dcc629b27"
+		c.JSON(200, gin.H{
+			"page":          1,
+			"pageSize":      10,
+			"totalElements": 1,
+			"items": []interface{}{
+				map[string]interface{}{
+					"bookUid":   bookUid,
+					"name":      "Краткий курс C++ в 7 томах",
+					"author":    "Бьерн Страуструп",
+					"genre":     "Научная фантастика",
+					"condition": "EXCELLENT",
+				},
+			},
+		})
 	})
 	if resp == nil {
 		return
