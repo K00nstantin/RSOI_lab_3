@@ -17,8 +17,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 3s
-      retries: 10
-      start_period: 10s
+      retries: 15
+      start_period: 30s
 
   gateway:
     build:
@@ -33,18 +33,15 @@ services:
       LIBRARY_SERVICE_URL: http://library:8060
       RESERVATION_SERVICE_URL: http://reservation:8070
     depends_on:
-      library:
-        condition: service_healthy
-      rating:
-        condition: service_healthy
-      reservation:
-        condition: service_healthy
+      - library
+      - rating
+      - reservation
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/manage/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8080/manage/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
 
   library:
     build:
@@ -61,14 +58,13 @@ services:
       DB_PASSWORD: test
       DB_NAME: libraries
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8060/manage/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8060/manage/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
 
   rating:
     build:
@@ -85,14 +81,13 @@ services:
       DB_PASSWORD: test
       DB_NAME: ratings
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8050/manage/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8050/manage/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
 
   reservation:
     build:
@@ -109,14 +104,13 @@ services:
       DB_PASSWORD: test
       DB_NAME: reservations
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8070/manage/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8070/manage/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
 
 volumes:
   db-data:
