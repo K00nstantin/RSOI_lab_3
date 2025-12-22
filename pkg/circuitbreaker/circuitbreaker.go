@@ -57,7 +57,7 @@ func (cb *CircuitBreaker) Execute(fn func() error, fallback func() error) error 
 		cb.failureCount++
 		cb.lastFailureTime = time.Now()
 
-		if cb.failureCount >= cb.maxFailures || cb.state == StateHalfOpen {
+		if cb.failureCount > cb.maxFailures || cb.state == StateHalfOpen {
 			cb.state = StateOpen
 		}
 		return err
