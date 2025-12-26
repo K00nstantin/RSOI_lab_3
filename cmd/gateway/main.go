@@ -37,18 +37,16 @@ func main() {
 	libraryServiceURL = getEnv("LIBRARY_SERVICE_URL", "http://localhost:8060")
 	reservationServiceURL = getEnv("RESERVATION_SERVICE_URL", "http://localhost:8070")
 
-	// Подключение к Redis
 	redisHost := getEnv("REDIS_HOST", "localhost")
 	redisPort := getEnv("REDIS_PORT", "6379")
 	redisAddr := redisHost + ":" + redisPort
 
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     redisAddr,
-		Password: "", // нет пароля по умолчанию
-		DB:       0,  // используем базу данных по умолчанию
+		Password: "",
+		DB:       0,
 	})
 
-	// Проверяем подключение к Redis
 	ctx := context.Background()
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
@@ -287,7 +285,7 @@ func createReservationHandler(c *gin.Context) {
 		body, _ := json.Marshal(requestWithCondition)
 		url := reservationServiceURL + "/api/v1/reservations"
 		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "Bonus Service unavailable"})
+		c.JSON(200, gin.H{"message": "Reservation request queued for processing"})
 		return
 	}
 	availableCount, ok := bookinfo["availableCount"].(float64)
@@ -328,32 +326,25 @@ func createReservationHandler(c *gin.Context) {
 		return
 	}
 	url := reservationServiceURL + "/api/v1/reservations"
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create the request"})
+	var reservation map[string]interface{}
+
+	resp, _ := executeWithCB(reservationCB, c, "POST", url, body,
+		map[string]string{"Content-Type": "application/json", "X-User-Name": username}, func() {
+			queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
+			c.JSON(200, gin.H{"message": "Reservation request queued for processing"})
+		})
+
+	if resp == nil {
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-User-Name", username)
-	resp, err := httpClient.Do(req)
+	defer resp.Body.Close()
+
+	err = json.NewDecoder(resp.Body).Decode(&reservation)
 	if err != nil {
 		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
 		c.JSON(200, gin.H{"message": "Reservation request queued for processing"})
 		return
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		rbody, _ := io.ReadAll(resp.Body)
-		c.Data(resp.StatusCode, "application/json", rbody)
-		return
-	}
-	var reservation map[string]interface{}
-	err = json.NewDecoder(resp.Body).Decode(&reservation)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decode the response"})
-		return
-	}
-
 	err = decreaseBookCount(request.LibraryUid, request.BookUid)
 	if err != nil {
 		if reservationUid, ok := reservation["reservationUid"].(string); ok {
