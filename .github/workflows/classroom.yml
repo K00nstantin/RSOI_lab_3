@@ -42,16 +42,16 @@ jobs:
         run: docker compose build
 
       - name: Run containers
-        timeout-minutes: 20
+        timeout-minutes: 5
         run: |
           docker compose up -d
-          sleep 60
+          sleep 30
           ./scripts/wait-script.sh
         env:
           WAIT_PORTS: 8080,8070,8060,8050
 
       - name: Run API Tests
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: ./scripts/test-script.sh
         env:
           VARIANT: v4

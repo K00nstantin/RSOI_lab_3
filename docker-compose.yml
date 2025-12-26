@@ -20,6 +20,19 @@ services:
       retries: 15
       start_period: 30s
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: on-failure
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+
   gateway:
     build:
       context: .
@@ -32,10 +45,13 @@ services:
       RATING_SERVICE_URL: http://rating:8050
       LIBRARY_SERVICE_URL: http://library:8060
       RESERVATION_SERVICE_URL: http://reservation:8070
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     depends_on:
       - library
       - rating
       - reservation
+      - redis
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8080/manage/health || exit 1"]
       interval: 10s

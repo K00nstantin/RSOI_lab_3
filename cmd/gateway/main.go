@@ -4,6 +4,7 @@ import (
 	"RSOI_lab_3/pkg/circuitbreaker"
 	"RSOI_lab_3/pkg/queue"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -35,11 +37,29 @@ func main() {
 	libraryServiceURL = getEnv("LIBRARY_SERVICE_URL", "http://localhost:8060")
 	reservationServiceURL = getEnv("RESERVATION_SERVICE_URL", "http://localhost:8070")
 
+	// Подключение к Redis
+	redisHost := getEnv("REDIS_HOST", "localhost")
+	redisPort := getEnv("REDIS_PORT", "6379")
+	redisAddr := redisHost + ":" + redisPort
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: "", // нет пароля по умолчанию
+		DB:       0,  // используем базу данных по умолчанию
+	})
+
+	// Проверяем подключение к Redis
+	ctx := context.Background()
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	log.Printf("Connected to Redis at %s", redisAddr)
+
 	httpClient = &http.Client{Timeout: 10 * time.Second}
 	libraryCB = circuitbreaker.NewCircuitBreaker(maxFailures, timeout)
 	ratingCB = circuitbreaker.NewCircuitBreaker(maxFailures, timeout)
 	reservationCB = circuitbreaker.NewCircuitBreaker(maxFailures, timeout)
-	retryQueue = queue.NewQueue()
+	retryQueue = queue.NewQueue(redisClient)
 
 	go processRetryQueue()
 
@@ -66,7 +86,9 @@ func processRetryQueue() {
 				req.RetryCount++
 				if req.RetryCount < req.MaxRetries {
 					req.RetryAt = time.Now().Add(retryDelay)
-					retryQueue.Enqueue(req)
+					if err := retryQueue.Enqueue(req); err != nil {
+						log.Printf("Failed to enqueue retry request %s: %v", req.ID, err)
+					}
 				}
 			}
 		}
@@ -756,7 +778,7 @@ func isConditionWorse(originalCondition, returnedCondition string) bool {
 }
 
 func queueRequestForRetry(method, url string, headers map[string]string, body []byte) {
-	retryQueue.Enqueue(&queue.RetryRequest{
+	if err := retryQueue.Enqueue(&queue.RetryRequest{
 		ID:         uuid.New().String(),
 		Method:     method,
 		URL:        url,
@@ -765,5 +787,7 @@ func queueRequestForRetry(method, url string, headers map[string]string, body []
 		RetryAt:    time.Now().Add(retryDelay),
 		RetryCount: 0,
 		MaxRetries: maxRetries,
-	})
+	}); err != nil {
+		log.Printf("Failed to queue request for retry: %v", err)
+	}
 }
