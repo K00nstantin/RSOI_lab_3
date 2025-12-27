@@ -519,7 +519,13 @@ func returnBookHandler(c *gin.Context) {
 	if ratingDelta != 0 {
 		err = adjustUserRating(username, ratingDelta)
 		if err != nil {
-			log.Printf("Failed to update user rating: %v", err)
+			url := ratingServiceURL + "/api/v1/rating/adjust"
+			body, _ := json.Marshal(map[string]interface{}{
+				"username": username,
+				"delta":    ratingDelta,
+			})
+			queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json"}, body)
+			log.Printf("Failed to update user rating, queued for retry: %v", err)
 		}
 	}
 
@@ -761,20 +767,35 @@ func adjustUserRating(username string, delta int) error {
 		return err
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var success bool
+	err = ratingCB.Execute(
+		func() error {
+			req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/json")
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to adjust rating: status %d", resp.StatusCode)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("failed to adjust rating: status %d", resp.StatusCode)
+			}
+
+			success = true
+			return nil
+		},
+		func() error {
+			return fmt.Errorf("rating service unavailable")
+		},
+	)
+
+	if err != nil || !success {
+		return fmt.Errorf("rating service unavailable")
 	}
 
 	return nil
