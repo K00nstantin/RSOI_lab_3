@@ -72,3 +72,9 @@ func (cb *CircuitBreaker) Execute(fn func() error, fallback func() error) error 
 
 	return nil
 }
+
+func (cb *CircuitBreaker) GetState() State {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+	return cb.state
+}

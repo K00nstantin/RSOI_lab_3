@@ -285,7 +285,7 @@ func createReservationHandler(c *gin.Context) {
 		body, _ := json.Marshal(requestWithCondition)
 		url := reservationServiceURL + "/api/v1/reservations"
 		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
-		c.JSON(200, gin.H{"message": "Reservation request queued for processing"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "Bonus Service unavailable"})
 		return
 	}
 	availableCount, ok := bookinfo["availableCount"].(float64)
@@ -513,6 +513,11 @@ func getRatingHandler(c *gin.Context) {
 	username := c.GetHeader("X-User-Name")
 	if username == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "X-User-Name header is required"})
+		return
+	}
+
+	if libraryCB.GetState() == circuitbreaker.StateOpen {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "Bonus Service unavailable"})
 		return
 	}
 
