@@ -620,7 +620,7 @@ func getLibraryInfoWithFallback(libraryUid string) map[string]interface{} {
 func getUserRatingWithFallback(username string) (map[string]interface{}, bool) {
 	var result map[string]interface{}
 	var fallbackCalled bool
-	ratingCB.Execute(
+	err := ratingCB.Execute(
 		func() error {
 			req, _ := http.NewRequest("GET", ratingServiceURL+"/api/v1/rating", nil)
 			req.Header.Set("X-User-Name", username)
@@ -640,6 +640,10 @@ func getUserRatingWithFallback(username string) (map[string]interface{}, bool) {
 			return nil
 		},
 	)
+	if err != nil {
+		fallbackCalled = true
+		result = map[string]interface{}{"stars": 0}
+	}
 	return result, fallbackCalled
 }
 
