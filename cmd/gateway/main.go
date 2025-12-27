@@ -267,9 +267,11 @@ func createReservationHandler(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "validation error",
-			"errors": map[string]string{
-				"field": "request",
-				"error": err.Error(),
+			"errors": []map[string]string{
+				{
+					"field": "request",
+					"error": err.Error(),
+				},
 			},
 		})
 		return
@@ -389,9 +391,11 @@ func returnBookHandler(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "validation error",
-			"errors": map[string]string{
-				"field": "request",
-				"error": err.Error(),
+			"errors": []map[string]string{
+				{
+					"field": "request",
+					"error": err.Error(),
+				},
 			},
 		})
 		return
