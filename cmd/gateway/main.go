@@ -296,6 +296,20 @@ func createReservationHandler(c *gin.Context) {
 		return
 	}
 
+	if ratingCB.GetState() == circuitbreaker.StateOpen {
+		requestWithCondition := map[string]interface{}{
+			"bookUid":       request.BookUid,
+			"libraryUid":    request.LibraryUid,
+			"tillDate":      request.TillDate,
+			"bookCondition": "EXCELLENT",
+		}
+		body, _ := json.Marshal(requestWithCondition)
+		url := reservationServiceURL + "/api/v1/reservations"
+		queueRequestForRetry("POST", url, map[string]string{"Content-Type": "application/json", "X-User-Name": username}, body)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "Bonus Service unavailable"})
+		return
+	}
+
 	activeReservationsCount := getActiveReservationsCountWithFallback(username)
 	rating := getUserRatingWithFallback(username)
 	stars, ok := rating["stars"].(float64)
