@@ -296,7 +296,9 @@ func createReservationHandler(c *gin.Context) {
 		return
 	}
 
-	if ratingCB.GetState() == circuitbreaker.StateOpen {
+	activeReservationsCount := getActiveReservationsCountWithFallback(username)
+	rating, ratingFallback := getUserRatingWithFallback(username)
+	if ratingFallback {
 		requestWithCondition := map[string]interface{}{
 			"bookUid":       request.BookUid,
 			"libraryUid":    request.LibraryUid,
@@ -309,9 +311,6 @@ func createReservationHandler(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "Bonus Service unavailable"})
 		return
 	}
-
-	activeReservationsCount := getActiveReservationsCountWithFallback(username)
-	rating := getUserRatingWithFallback(username)
 	stars, ok := rating["stars"].(float64)
 	if !ok {
 		stars = 0
@@ -372,7 +371,7 @@ func createReservationHandler(c *gin.Context) {
 	}
 
 	libraryinfo := getLibraryInfoWithFallback(request.LibraryUid)
-	rating = getUserRatingWithFallback(username)
+	rating, _ = getUserRatingWithFallback(username)
 	response := map[string]interface{}{
 		"reservationUid": reservation["reservationUid"],
 		"status":         reservation["status"],
@@ -618,8 +617,9 @@ func getLibraryInfoWithFallback(libraryUid string) map[string]interface{} {
 	return result
 }
 
-func getUserRatingWithFallback(username string) map[string]interface{} {
+func getUserRatingWithFallback(username string) (map[string]interface{}, bool) {
 	var result map[string]interface{}
+	var fallbackCalled bool
 	ratingCB.Execute(
 		func() error {
 			req, _ := http.NewRequest("GET", ratingServiceURL+"/api/v1/rating", nil)
@@ -635,11 +635,12 @@ func getUserRatingWithFallback(username string) map[string]interface{} {
 			return json.NewDecoder(resp.Body).Decode(&result)
 		},
 		func() error {
+			fallbackCalled = true
 			result = map[string]interface{}{"stars": 0}
 			return nil
 		},
 	)
-	return result
+	return result, fallbackCalled
 }
 
 func getActiveReservationsCountWithFallback(username string) int {
