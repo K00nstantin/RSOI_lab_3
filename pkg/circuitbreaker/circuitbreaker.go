@@ -16,7 +16,8 @@ const (
 
 type CircuitBreaker struct {
 	maxFailures     int
-	failureCount    int
+	window          time.Duration
+	failures        []time.Time
 	timeout         time.Duration
 	lastFailureTime time.Time
 	state           State
@@ -24,10 +25,16 @@ type CircuitBreaker struct {
 }
 
 func NewCircuitBreaker(maxFailures int, timeout time.Duration) *CircuitBreaker {
+	return NewCircuitBreakerWithWindow(maxFailures, timeout, 60*time.Second)
+}
+
+func NewCircuitBreakerWithWindow(maxFailures int, timeout time.Duration, window time.Duration) *CircuitBreaker {
 	return &CircuitBreaker{
 		maxFailures: maxFailures,
+		window:      window,
 		timeout:     timeout,
 		state:       StateClosed,
+		failures:    make([]time.Time, 0),
 	}
 }
 
@@ -38,7 +45,7 @@ func (cb *CircuitBreaker) Execute(fn func() error, fallback func() error) error 
 	if cb.state == StateOpen {
 		if time.Since(cb.lastFailureTime) >= cb.timeout {
 			cb.state = StateHalfOpen
-			cb.failureCount = 0
+			cb.failures = cb.failures[:0]
 		} else {
 			cb.mu.Unlock()
 			if fallback != nil {
@@ -54,23 +61,39 @@ func (cb *CircuitBreaker) Execute(fn func() error, fallback func() error) error 
 	err := fn()
 
 	if err != nil {
-		cb.failureCount++
-		cb.lastFailureTime = time.Now()
+		now := time.Now()
+		cb.lastFailureTime = now
+		cb.failures = append(cb.failures, now)
+		cb.cleanOldFailures(now)
 
-		if cb.failureCount > cb.maxFailures || cb.state == StateHalfOpen {
+		if len(cb.failures) > cb.maxFailures || cb.state == StateHalfOpen {
 			cb.state = StateOpen
 		}
 		return err
 	}
 
+	cb.cleanOldFailures(time.Now())
+
 	if cb.state == StateHalfOpen {
 		cb.state = StateClosed
-		cb.failureCount = 0
-	} else if cb.state == StateClosed {
-		cb.failureCount = 0
+		cb.failures = cb.failures[:0]
 	}
 
 	return nil
+}
+
+func (cb *CircuitBreaker) cleanOldFailures(now time.Time) {
+	cutoff := now.Add(-cb.window)
+	validStart := 0
+	for i := len(cb.failures) - 1; i >= 0; i-- {
+		if cb.failures[i].After(cutoff) {
+			validStart = i
+			break
+		}
+	}
+	if validStart > 0 {
+		cb.failures = cb.failures[validStart:]
+	}
 }
 
 func (cb *CircuitBreaker) GetState() State {
